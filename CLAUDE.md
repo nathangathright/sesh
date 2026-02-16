@@ -1,0 +1,59 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Sesh is a smart tmux session manager for Claude Code. It's a pure shell script (`sesh.sh`) that provides one command to create, attach, and resume tmux coding sessions with Claude Code. It gets installed by appending shell functions directly into the user's shell config file (`~/.zshrc` or `~/.bashrc`).
+
+## Architecture
+
+There are only two files that matter:
+
+- **`sesh.sh`** — The entire application. Contains these functions:
+  - `_sesh_state_dir()` — Ensures `~/.local/state/sesh/` exists, prints path.
+  - `_sesh_track_last()` — Writes session name to state file for last-session toggle.
+  - `_sesh_default_name()` — Git-aware default session name (remote origin → git root → basename).
+  - `_sesh_status()` — Checks `#{pane_current_command}` for `node` to detect if Claude is running.
+  - `_sesh_select()` — Interactive terminal menu (raw mode, ANSI escape sequences, arrow/vim key navigation, inline kill with `d` key). Returns selection via the `$SELECTED` global variable.
+  - `_sesh_last()` — Subcommand: toggle to previous session via state file.
+  - `_sesh_list()` — Subcommand: non-interactive session status dashboard.
+  - `_sesh_clone()` — Subcommand: git clone + session creation.
+  - `_sesh_kill()` — Subcommand: kill sessions (by name, all, or via picker).
+  - `sesh()` — Core logic: subcommand routing → argument parsing → tmux context detection → session enumeration → session creation/attachment → Claude Code launch.
+- **`install.sh`** — Appends the contents of `sesh.sh` into the user's shell config file. Detects shell type, checks for existing installation, fetches from GitHub or uses local copy.
+
+Key design decisions:
+- Functions are sourced into the shell (not run as a subprocess) so they can modify the user's terminal state and attach to tmux sessions.
+- `_sesh_select` manages raw terminal mode directly via `stty` and restores state via trap handlers.
+- The zsh-specific `read -k` and array syntax (`${(@f)...}`, 1-based indexing) means this currently targets zsh primarily.
+- Subcommand names (`last`, `list`, `ls`, `clone`, `kill`) are reserved — sessions with these names must use `sesh -s <name>`.
+- Status detection: Claude Code runs as `node`. Check `#{pane_current_command}` for `node` → "active". Also detects `#{pane_dead}` for dead/crashed sessions.
+- Picker annotations use double-space delimiter (`"session  [active]"`) and are stripped with `${SELECTED%%  \[*}`.
+- State is stored in `~/.local/state/sesh/` (last and second_last files for session toggle).
+- Config is loaded from `~/.config/sesh/config` (sourced as shell). Override path with `SESH_CONFIG` env var.
+- Agent command defaults to `claude --dangerously-skip-permissions` but is configurable via `SESH_CMD` env var or config.
+- Auto-resume detects `.claude/` directory in the project path and adds `--continue` to the claude command.
+- Crash resilience: sessions use `remain-on-exit on` and `pane-died` hook for auto-respawn.
+- Environment injection: `SESH_SESSION` and `SESH_PATH` are set in tmux session environment.
+- Zoxide integration is optional and guarded by `command -v zoxide`.
+
+## Development
+
+There is no build step, test suite, or linter. To test changes locally:
+
+```bash
+source sesh.sh    # Load functions into current shell
+sesh              # Run it
+```
+
+## Requirements
+
+- tmux
+- Claude Code CLI (`claude`)
+- zsh (primary) or bash
+
+### Optional
+
+- zoxide — path resolution by project name
+- git — git-aware naming and `sesh clone`
