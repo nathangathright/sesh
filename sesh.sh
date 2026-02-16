@@ -1,6 +1,10 @@
 # sesh - Smart tmux session manager for Claude Code
 # https://github.com/nathangathright/sesh
 
+SESH_VERSION="0.1.0"
+
+# Global: _sesh_select returns its result via $SELECTED
+
 # Ensure state directory exists, print path
 _sesh_state_dir() {
   local dir="${HOME}/.local/state/sesh"
@@ -48,18 +52,21 @@ _sesh_default_name() {
 # Check if Claude is running in a tmux session
 _sesh_status() {
   local target="$1"
-  local cmds
-  cmds=$(tmux list-panes -t "$target" -F '#{pane_current_command}' 2>/dev/null)
-  if [[ -z "$cmds" ]]; then
+  # Capture pane info in a single query to avoid race conditions
+  local pane_info
+  pane_info=$(tmux list-panes -t "=$target" -F '#{pane_current_command} #{pane_dead}' 2>/dev/null)
+  if [[ -z "$pane_info" ]]; then
     printf 'dead'
-  elif printf '%s' "$cmds" | grep -q 'node'; then
+  elif printf '%s' "$pane_info" | grep -q 'node'; then
     printf 'active'
   else
     # Check if all panes are dead (remain-on-exit keeps them visible)
-    local dead_count
-    dead_count=$(tmux list-panes -t "$target" -F '#{pane_dead}' 2>/dev/null | grep -c '1')
-    local total_count
-    total_count=$(tmux list-panes -t "$target" -F '#{pane_dead}' 2>/dev/null | wc -l | tr -d ' ')
+    local total_count=0 dead_count=0
+    local line
+    while IFS= read -r line; do
+      total_count=$((total_count + 1))
+      [[ "$line" == *" 1" ]] && dead_count=$((dead_count + 1))
+    done <<< "$pane_info"
     if [[ "$dead_count" -eq "$total_count" && "$total_count" -gt 0 ]]; then
       printf 'dead'
     else
@@ -70,6 +77,7 @@ _sesh_status() {
 
 # Interactive menu helper (arrow keys + enter)
 # Usage: _sesh_select [--kill] "prompt" option1 option2 ...
+# Returns selection via the global $SELECTED variable
 _sesh_select() {
   local kill_enabled=0
   if [[ "${1:-}" == "--kill" ]]; then
@@ -154,7 +162,7 @@ _sesh_select() {
           local target="${options[$((selected + 1))]}"
           # Strip status annotation (e.g. "session  [active]" → "session")
           target="${target%%  \[*}"
-          tmux kill-session -t "$target" 2>/dev/null
+          tmux kill-session -t "=$target" 2>/dev/null
           # Remove from array (zsh 1-based)
           options[$((selected + 1))]=()
           num_options=${#options[@]}
@@ -222,16 +230,16 @@ _sesh_last() {
     return 1
   fi
 
-  if ! tmux has-session -t "$target" 2>/dev/null; then
+  if ! tmux has-session -t "=$target" 2>/dev/null; then
     echo "Previous session '$target' no longer exists."
     return 1
   fi
 
   _sesh_track_last "$target"
   if [[ -n "$TMUX" ]]; then
-    tmux switch-client -t "$target"
+    tmux switch-client -t "=$target"
   else
-    tmux attach -t "$target"
+    tmux attach -t "=$target"
   fi
 }
 
@@ -244,15 +252,31 @@ _sesh_list() {
     return 0
   fi
 
-  printf "%-20s %-40s %s\n" "SESSION" "PATH" "STATUS"
-  printf "%-20s %-40s %s\n" "-------" "----" "------"
-
-  local name path sess_status
+  # Collect data and find max name width
+  local -a names=() paths=() statuses=()
+  local name sess_path sess_status max_name=7
   while IFS= read -r name; do
-    path=$(tmux display-message -p -t "${name}:" '#{pane_current_path}' 2>/dev/null)
+    sess_path=$(tmux display-message -p -t "=${name}:" '#{pane_current_path}' 2>/dev/null)
+    # Fallback: try SESH_PATH from session environment
+    if [[ -z "$sess_path" ]]; then
+      sess_path=$(tmux show-environment -t "=$name" SESH_PATH 2>/dev/null)
+      sess_path="${sess_path#SESH_PATH=}"
+    fi
     sess_status=$(_sesh_status "$name")
-    printf "%-20s %-40s %s\n" "$name" "$path" "[$sess_status]"
+    names+=("$name")
+    paths+=("$sess_path")
+    statuses+=("$sess_status")
+    (( ${#name} > max_name )) && max_name=${#name}
   done <<< "$sessions"
+
+  local col1=$((max_name + 2))
+  printf "%-${col1}s %-40s %s\n" "SESSION" "PATH" "STATUS"
+  printf "%-${col1}s %-40s %s\n" "-------" "----" "------"
+
+  local i
+  for ((i = 1; i <= ${#names[@]}; i++)); do
+    printf "%-${col1}s %-40s %s\n" "${names[$i]}" "${paths[$i]}" "[${statuses[$i]}]"
+  done
 }
 
 # Subcommand: git clone + create session
@@ -291,35 +315,74 @@ _sesh_kill() {
         echo "No sessions to kill."
         return 0
       fi
-      local name
+      local name killed=0
       while IFS= read -r name; do
-        tmux kill-session -t "$name" 2>/dev/null && echo "Killed session: $name"
+        # Only kill sesh-managed sessions (those with SESH_SESSION env var)
+        if tmux show-environment -t "=$name" SESH_SESSION &>/dev/null; then
+          tmux kill-session -t "=$name" 2>/dev/null && echo "Killed session: $name" && killed=$((killed + 1))
+        fi
       done <<< "$sessions"
+      if [[ $killed -eq 0 ]]; then
+        echo "No sesh-managed sessions to kill."
+      fi
       ;;
     "")
-      # No args: show picker
+      # No args: show picker with status annotations
       local sessions
       sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null)
       if [[ -z "$sessions" ]]; then
         echo "No sessions to kill."
         return 0
       fi
-      local -a session_list=("${(@f)sessions}")
+      local -a session_list=()
+      local name sess_status
+      while IFS= read -r name; do
+        sess_status=$(_sesh_status "$name")
+        session_list+=("${name}  [${sess_status}]")
+      done <<< "$sessions"
       if _sesh_select --kill "Kill a session:" "${session_list[@]}"; then
         local target="${SELECTED%%  \[*}"
-        tmux kill-session -t "$target" 2>/dev/null && echo "Killed session: $target"
+        tmux kill-session -t "=$target" 2>/dev/null && echo "Killed session: $target"
       fi
       ;;
     *)
       # Kill named session
-      if tmux has-session -t "$1" 2>/dev/null; then
-        tmux kill-session -t "$1" && echo "Killed session: $1"
+      if tmux has-session -t "=$1" 2>/dev/null; then
+        tmux kill-session -t "=$1" && echo "Killed session: $1"
       else
         echo "Session '$1' not found."
         return 1
       fi
       ;;
   esac
+}
+
+# Print usage information
+_sesh_help() {
+  cat <<'EOF'
+Usage: sesh [command] [options]
+
+Commands:
+  sesh                              Smart: does the right thing based on context
+  sesh <name> [path] [prompt]       Create/attach session with positional args
+  sesh last                         Toggle to previous session
+  sesh list, ls                     Show all sessions with status
+  sesh clone <url> [name]           Git clone + create session
+  sesh kill [name|--all]            Kill sessions
+  sesh help                         Show this help message
+  sesh version                      Show version
+
+Options:
+  -s, --session <name>    Session name
+  -p, --path <path>       Project path
+  -m, --message <text>    Initial prompt for Claude
+
+Context-aware behavior (no arguments):
+  Inside tmux    Resumes Claude Code
+  0 sessions     Prompts for session name and project path
+  1 session      Auto-attaches
+  N sessions     Interactive menu with status indicators
+EOF
 }
 
 # Smart tmux session manager for Claude Code
@@ -330,6 +393,10 @@ sesh() {
 
   # Subcommand routing
   case "${1:-}" in
+    help|--help|-h)
+      _sesh_help; return 0 ;;
+    version|--version|-v)
+      echo "sesh $SESH_VERSION"; return 0 ;;
     last)
       shift; _sesh_last "$@"; return $? ;;
     list|ls)
@@ -416,7 +483,7 @@ sesh() {
       session_name=$(echo "$sessions" | head -1)
       echo "Attaching to session: $session_name"
       _sesh_track_last "$session_name"
-      tmux attach -t "$session_name"
+      tmux attach -t "=$session_name"
       return
     elif [[ "$session_count" -gt 1 ]]; then
       # Build display list with status annotations
@@ -432,7 +499,7 @@ sesh() {
         session_name="${SELECTED%%  \[*}"
         echo "Attaching to session: $session_name"
         _sesh_track_last "$session_name"
-        tmux attach -t "$session_name"
+        tmux attach -t "=$session_name"
         return
       else
         echo "Cancelled."
@@ -443,14 +510,14 @@ sesh() {
       local default_name
       default_name=$(_sesh_default_name)
       printf "Session name [%s]: " "$default_name"
-      read session_name
+      read -r session_name
       if [[ -z "$session_name" ]]; then
         session_name="$default_name"
       fi
 
       local default_path="$PWD"
       printf "Project path [%s]: " "$default_path"
-      read project_path
+      read -r project_path
       if [[ -z "$project_path" ]]; then
         project_path="$default_path"
       fi
@@ -458,10 +525,10 @@ sesh() {
   fi
 
   # Check if session already exists (when session name was provided)
-  if tmux has-session -t "$session_name" 2>/dev/null; then
+  if tmux has-session -t "=$session_name" 2>/dev/null; then
     echo "Attaching to existing session: $session_name"
     _sesh_track_last "$session_name"
-    tmux attach -t "$session_name"
+    tmux attach -t "=$session_name"
     return
   fi
 
@@ -469,7 +536,7 @@ sesh() {
   if [[ -z "$project_path" ]]; then
     local default_path="$PWD"
     printf "Project path [%s]: " "$default_path"
-    read project_path
+    read -r project_path
     if [[ -z "$project_path" ]]; then
       project_path="$default_path"
     fi
@@ -481,7 +548,7 @@ sesh() {
   # Check if directory exists
   if [[ ! -d "$project_path" ]]; then
     printf "Directory '%s' does not exist. Create it? (y/n) " "$project_path"
-    read REPLY
+    read -r REPLY
     if [[ $REPLY =~ ^[Yy] ]]; then
       mkdir -p "$project_path"
       echo "Created directory: $project_path"
@@ -505,14 +572,16 @@ sesh() {
   tmux new-session -s "$session_name" -c "$project_path" -d
 
   # Inject environment variables so child processes know their context
-  tmux set-environment -t "$session_name" SESH_SESSION "$session_name"
-  tmux set-environment -t "$session_name" SESH_PATH "$project_path"
+  tmux set-environment -t "=$session_name" SESH_SESSION "$session_name"
+  tmux set-environment -t "=$session_name" SESH_PATH "$project_path"
 
-  # Crash resilience: keep pane visible on exit and auto-respawn
-  tmux set-option -t "$session_name" remain-on-exit on
-  tmux set-hook -t "$session_name" pane-died "respawn-pane -k"
+  # Crash resilience: keep pane visible on exit and auto-respawn.
+  # Protects the session if the shell process itself crashes (OOM, SIGKILL, etc.).
+  # For Claude exits, the shell continues naturally and the user can restart.
+  tmux set-option -t "=$session_name" remain-on-exit on
+  tmux set-hook -t "=$session_name" pane-died "respawn-pane -k"
 
-  tmux send-keys -t "$session_name" "$claude_cmd" C-m
+  tmux send-keys -t "=$session_name" "$claude_cmd" C-m
   _sesh_track_last "$session_name"
-  tmux attach -t "$session_name"
+  tmux attach -t "=$session_name"
 }

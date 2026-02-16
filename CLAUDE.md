@@ -19,22 +19,25 @@ There are only two files that matter:
   - `_sesh_last()` — Subcommand: toggle to previous session via state file.
   - `_sesh_list()` — Subcommand: non-interactive session status dashboard.
   - `_sesh_clone()` — Subcommand: git clone + session creation.
-  - `_sesh_kill()` — Subcommand: kill sessions (by name, all, or via picker).
+  - `_sesh_kill()` — Subcommand: kill sessions (by name, all, or via picker). `--all` only kills sesh-managed sessions (those with `SESH_SESSION` env var).
+  - `_sesh_help()` — Prints usage information for `sesh help`.
   - `sesh()` — Core logic: subcommand routing → argument parsing → tmux context detection → session enumeration → session creation/attachment → Claude Code launch.
-- **`install.sh`** — Appends the contents of `sesh.sh` into the user's shell config file. Detects shell type, checks for existing installation, fetches from GitHub or uses local copy.
+- **`install.sh`** — Appends the contents of `sesh.sh` into the user's shell config file between `# >>> sesh >>>` / `# <<< sesh <<<` markers. Supports in-place updates when markers are present, and detects legacy (unmarked) installations.
 
 Key design decisions:
 - Functions are sourced into the shell (not run as a subprocess) so they can modify the user's terminal state and attach to tmux sessions.
 - `_sesh_select` manages raw terminal mode directly via `stty` and restores state via trap handlers.
 - The zsh-specific `read -k` and array syntax (`${(@f)...}`, 1-based indexing) means this currently targets zsh primarily.
-- Subcommand names (`last`, `list`, `ls`, `clone`, `kill`) are reserved — sessions with these names must use `sesh -s <name>`.
+- Subcommand names (`last`, `list`, `ls`, `clone`, `kill`, `help`, `version`) are reserved — sessions with these names must use `sesh -s <name>`.
+- All tmux `-t` targets use the `=` prefix (e.g., `-t "=$name"`) for exact session name matching. Without this, dots and colons in session names are misinterpreted as window/pane separators.
 - Status detection: Claude Code runs as `node`. Check `#{pane_current_command}` for `node` → "active". Also detects `#{pane_dead}` for dead/crashed sessions.
 - Picker annotations use double-space delimiter (`"session  [active]"`) and are stripped with `${SELECTED%%  \[*}`.
 - State is stored in `~/.local/state/sesh/` (last and second_last files for session toggle).
 - Config is loaded from `~/.config/sesh/config` (sourced as shell). Override path with `SESH_CONFIG` env var.
 - Agent command defaults to `claude --dangerously-skip-permissions` but is configurable via `SESH_CMD` env var or config.
 - Auto-resume detects `.claude/` directory in the project path and adds `--continue` to the claude command.
-- Crash resilience: sessions use `remain-on-exit on` and `pane-died` hook for auto-respawn.
+- Crash resilience: sessions use `remain-on-exit on` and `pane-died` hook for auto-respawn. This protects the session if the shell process crashes; for Claude exits, the shell continues naturally.
+- Version is tracked in `SESH_VERSION` at the top of `sesh.sh`.
 - Environment injection: `SESH_SESSION` and `SESH_PATH` are set in tmux session environment.
 - Zoxide integration is optional and guarded by `command -v zoxide`.
 

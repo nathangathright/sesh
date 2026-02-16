@@ -6,6 +6,9 @@
 
 set -e
 
+SESH_MARKER_START="# >>> sesh >>>"
+SESH_MARKER_END="# <<< sesh <<<"
+
 # Determine shell config file
 SHELL_CONFIG=""
 if [ -f "$HOME/.zshrc" ]; then
@@ -15,18 +18,8 @@ elif [ -f "$HOME/.bashrc" ]; then
 elif [ -f "$HOME/.bash_profile" ]; then
   SHELL_CONFIG="$HOME/.bash_profile"
 else
-  echo "❌ Could not find shell config file (~/.zshrc, ~/.bashrc, or ~/.bash_profile)"
+  echo "Could not find shell config file (~/.zshrc, ~/.bashrc, or ~/.bash_profile)"
   exit 1
-fi
-
-# Check if already installed
-if grep -q "sesh()" "$SHELL_CONFIG" 2>/dev/null; then
-  echo "✅ sesh is already installed in $SHELL_CONFIG"
-  echo ""
-  echo "To update, first remove the existing installation:"
-  echo "  Remove the _sesh_select() and sesh() functions from $SHELL_CONFIG"
-  echo "  Then re-run this installer"
-  exit 0
 fi
 
 # Fetch sesh.sh from the repo (or use local copy if running from repo)
@@ -42,11 +35,45 @@ else
   trap "rm -f '$SESH_SOURCE'" EXIT
 fi
 
-# Append to shell config
-echo "" >> "$SHELL_CONFIG"
-cat "$SESH_SOURCE" >> "$SHELL_CONFIG"
+UPDATING=0
 
-echo "✅ sesh installed to $SHELL_CONFIG"
+# Check for existing installation
+if grep -q "$SESH_MARKER_START" "$SHELL_CONFIG" 2>/dev/null; then
+  # Marked installation exists — update in place
+  UPDATING=1
+  TMP_CONFIG=$(mktemp)
+  awk -v start="$SESH_MARKER_START" -v end="$SESH_MARKER_END" '
+    $0 == start { skip=1; next }
+    $0 == end { skip=0; next }
+    !skip { print }
+  ' "$SHELL_CONFIG" > "$TMP_CONFIG"
+  mv "$TMP_CONFIG" "$SHELL_CONFIG"
+elif grep -q "sesh()" "$SHELL_CONFIG" 2>/dev/null; then
+  # Legacy installation without markers
+  echo "sesh is installed in $SHELL_CONFIG but without update markers."
+  echo ""
+  echo "To update, first remove the existing installation:"
+  echo "  Search for '# sesh - Smart tmux session manager' in $SHELL_CONFIG"
+  echo "  Delete from that line through the closing } of the sesh() function"
+  echo "  Then re-run this installer"
+  exit 0
+fi
+
+# Append marked content to shell config
+if [ "$UPDATING" -eq 0 ]; then
+  echo "" >> "$SHELL_CONFIG"
+fi
+{
+  echo "$SESH_MARKER_START"
+  cat "$SESH_SOURCE"
+  echo "$SESH_MARKER_END"
+} >> "$SHELL_CONFIG"
+
+if [ "$UPDATING" -eq 1 ]; then
+  echo "sesh updated in $SHELL_CONFIG"
+else
+  echo "sesh installed to $SHELL_CONFIG"
+fi
 echo ""
 echo "To start using sesh, run:"
 echo "  source $SHELL_CONFIG"
@@ -55,6 +82,7 @@ echo "Usage:"
 echo "  sesh                        # Smart: detects sessions, prompts when needed"
 echo "  sesh myproject ~/code       # Create/attach 'myproject' session at ~/code"
 echo "  sesh -s work -p ~/app       # Using named parameters"
+echo "  sesh help                   # Show all commands and options"
 echo ""
 echo "How it works:"
 echo "  Inside tmux  → Resumes Claude Code"
