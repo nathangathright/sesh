@@ -247,11 +247,11 @@ _sesh_list() {
   printf "%-20s %-40s %s\n" "SESSION" "PATH" "STATUS"
   printf "%-20s %-40s %s\n" "-------" "----" "------"
 
-  local name path status
+  local name path sess_status
   while IFS= read -r name; do
     path=$(tmux display-message -p -t "${name}:" '#{pane_current_path}' 2>/dev/null)
-    status=$(_sesh_status "$name")
-    printf "%-20s %-40s %s\n" "$name" "$path" "[$status]"
+    sess_status=$(_sesh_status "$name")
+    printf "%-20s %-40s %s\n" "$name" "$path" "[$sess_status]"
   done <<< "$sessions"
 }
 
@@ -421,10 +421,10 @@ sesh() {
     elif [[ "$session_count" -gt 1 ]]; then
       # Build display list with status annotations
       local -a session_list=()
-      local name status
+      local name sess_status
       while IFS= read -r name; do
-        status=$(_sesh_status "$name")
-        session_list+=("${name}  [${status}]")
+        sess_status=$(_sesh_status "$name")
+        session_list+=("${name}  [${sess_status}]")
       done <<< "$sessions"
 
       if _sesh_select --kill "Select a session:" "${session_list[@]}"; then
