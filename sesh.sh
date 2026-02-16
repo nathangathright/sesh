@@ -415,17 +415,17 @@ _sesh_agent() {
     return 1
   fi
 
-  local claude_cmd="$base_cmd"
+  local -a cmd_args=(${(z)base_cmd})
   local current_path
   current_path=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
   if [[ -d "${current_path}/.claude" ]]; then
-    claude_cmd="${claude_cmd} --continue"
+    cmd_args+=(--continue)
   fi
   if [[ -n "$initial_prompt" ]]; then
-    claude_cmd="${claude_cmd} -p $(printf '%q' "$initial_prompt")"
+    cmd_args+=(-p "$initial_prompt")
   fi
   echo "Starting Claude Code..."
-  eval "$claude_cmd"
+  "${cmd_args[@]}"
 }
 
 # Subcommand: interactive session creation wizard
@@ -529,7 +529,9 @@ sesh() {
       local initial_prompt=""
       while [[ $# -gt 0 ]]; do
         case $1 in
-          -m|--message) initial_prompt="$2"; shift 2 ;;
+          -m|--message)
+            if [[ $# -lt 2 ]]; then echo "Error: $1 requires an argument." >&2; return 1; fi
+            initial_prompt="$2"; shift 2 ;;
           *) initial_prompt="$1"; shift ;;
         esac
       done
@@ -539,7 +541,9 @@ sesh() {
       local initial_prompt=""
       while [[ $# -gt 0 ]]; do
         case $1 in
-          -m|--message) initial_prompt="$2"; shift 2 ;;
+          -m|--message)
+            if [[ $# -lt 2 ]]; then echo "Error: $1 requires an argument." >&2; return 1; fi
+            initial_prompt="$2"; shift 2 ;;
           *) shift ;;
         esac
       done
@@ -556,14 +560,17 @@ sesh() {
   while [[ $# -gt 0 ]]; do
     case $1 in
       -s|--session)
+        if [[ $# -lt 2 ]]; then echo "Error: $1 requires an argument." >&2; return 1; fi
         session_name="$2"
         shift 2
         ;;
       -p|--path)
+        if [[ $# -lt 2 ]]; then echo "Error: $1 requires an argument." >&2; return 1; fi
         project_path="$2"
         shift 2
         ;;
       -m|--message)
+        if [[ $# -lt 2 ]]; then echo "Error: $1 requires an argument." >&2; return 1; fi
         initial_prompt="$2"
         shift 2
         ;;
