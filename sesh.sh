@@ -370,6 +370,11 @@ _sesh_clone() {
     return 1
   fi
 
+  if [[ "$url" == -* ]]; then
+    echo "Invalid URL: $url"
+    return 1
+  fi
+
   # Extract name from URL if not provided
   if [[ -z "$name" ]]; then
     name="${url##*/}"
