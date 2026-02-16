@@ -93,6 +93,40 @@ _sesh_attach() {
   fi
 }
 
+# Resolve project path: expand ~, ensure directory exists (prompt to create)
+# Prints resolved path to stdout; returns 1 on abort
+_sesh_resolve_path() {
+  local rpath="$1"
+  rpath="${rpath/#\~/$HOME}"
+  if [[ ! -d "$rpath" ]]; then
+    printf "Directory '%s' does not exist. Create it? (y/n) " "$rpath" >/dev/tty
+    local reply
+    read -r reply </dev/tty
+    if [[ $reply =~ ^[Yy] ]]; then
+      mkdir -p "$rpath"
+      echo "Created directory: $rpath" >/dev/tty
+    else
+      echo "Aborted." >/dev/tty
+      return 1
+    fi
+  fi
+  printf '%s' "$rpath"
+}
+
+# Build extra Claude CLI args for auto-resume and initial prompt
+# Sets _SESH_CMD_EXTRA array
+_sesh_build_cmd() {
+  local project_path="$1"
+  local initial_prompt="${2:-}"
+  _SESH_CMD_EXTRA=()
+  if [[ -d "${project_path}/.claude" ]]; then
+    _SESH_CMD_EXTRA+=(--continue)
+  fi
+  if [[ -n "$initial_prompt" ]]; then
+    _SESH_CMD_EXTRA+=(-p "$initial_prompt")
+  fi
+}
+
 # Create a new tmux session with Claude Code
 _sesh_create() {
   local session_name="$1"
@@ -101,13 +135,12 @@ _sesh_create() {
   local initial_prompt="${4:-}"
 
   # Build claude command with auto-resume and initial prompt
+  _sesh_build_cmd "$project_path" "$initial_prompt"
   local claude_cmd="$base_cmd"
-  if [[ -d "${project_path}/.claude" ]]; then
-    claude_cmd="${claude_cmd} --continue"
-  fi
-  if [[ -n "$initial_prompt" ]]; then
-    claude_cmd="${claude_cmd} -p $(printf '%q' "$initial_prompt")"
-  fi
+  local arg
+  for arg in "${_SESH_CMD_EXTRA[@]}"; do
+    claude_cmd="${claude_cmd} $(printf '%q' "$arg")"
+  done
 
   # Create new session, navigate to path, and start Claude Code
   echo "Creating new session '$session_name' at $project_path"
@@ -151,6 +184,7 @@ _sesh_select() {
   _sesh_select_cleanup() {
     printf "${ESC}[?25h" >/dev/tty 2>/dev/null
     [[ -n "$saved_stty" ]] && command stty "$saved_stty" 2>/dev/null
+    unset -f _sesh_select_cleanup _sesh_select_draw
   }
 
   trap '_sesh_select_cleanup; return 1' INT TERM HUP
@@ -415,15 +449,11 @@ _sesh_agent() {
     return 1
   fi
 
-  local -a cmd_args=(${(z)base_cmd})
   local current_path
   current_path=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
-  if [[ -d "${current_path}/.claude" ]]; then
-    cmd_args+=(--continue)
-  fi
-  if [[ -n "$initial_prompt" ]]; then
-    cmd_args+=(-p "$initial_prompt")
-  fi
+  _sesh_build_cmd "$current_path" "$initial_prompt"
+  local -a cmd_args=(${(z)base_cmd})
+  cmd_args+=("${_SESH_CMD_EXTRA[@]}")
   echo "Starting Claude Code..."
   "${cmd_args[@]}"
 }
@@ -460,21 +490,7 @@ _sesh_new() {
     project_path="$default_path"
   fi
 
-  # Expand ~ to home directory
-  project_path="${project_path/#\~/$HOME}"
-
-  # Check if directory exists
-  if [[ ! -d "$project_path" ]]; then
-    printf "Directory '%s' does not exist. Create it? (y/n) " "$project_path"
-    read -r REPLY
-    if [[ $REPLY =~ ^[Yy] ]]; then
-      mkdir -p "$project_path"
-      echo "Created directory: $project_path"
-    else
-      echo "Aborted."
-      return 1
-    fi
-  fi
+  project_path=$(_sesh_resolve_path "$project_path") || return 1
 
   _sesh_create "$session_name" "$project_path" "$base_cmd" "$initial_prompt"
 }
@@ -623,21 +639,7 @@ sesh() {
     fi
   fi
 
-  # Expand ~ to home directory
-  project_path="${project_path/#\~/$HOME}"
-
-  # Check if directory exists
-  if [[ ! -d "$project_path" ]]; then
-    printf "Directory '%s' does not exist. Create it? (y/n) " "$project_path"
-    read -r REPLY
-    if [[ $REPLY =~ ^[Yy] ]]; then
-      mkdir -p "$project_path"
-      echo "Created directory: $project_path"
-    else
-      echo "Aborted."
-      return 1
-    fi
-  fi
+  project_path=$(_sesh_resolve_path "$project_path") || return 1
 
   _sesh_create "$session_name" "$project_path" "$base_cmd" "$initial_prompt"
 }

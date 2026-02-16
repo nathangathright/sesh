@@ -9,15 +9,29 @@ set -e
 SESH_MARKER_START="# >>> sesh >>>"
 SESH_MARKER_END="# <<< sesh <<<"
 
-# Determine shell config file
+# Determine shell config file (prefer the user's login shell)
 SHELL_CONFIG=""
-if [ -f "$HOME/.zshrc" ]; then
-  SHELL_CONFIG="$HOME/.zshrc"
-elif [ -f "$HOME/.bashrc" ]; then
-  SHELL_CONFIG="$HOME/.bashrc"
-elif [ -f "$HOME/.bash_profile" ]; then
-  SHELL_CONFIG="$HOME/.bash_profile"
-else
+case "${SHELL##*/}" in
+  zsh)  [ -f "$HOME/.zshrc" ] && SHELL_CONFIG="$HOME/.zshrc" ;;
+  bash)
+    if [ -f "$HOME/.bashrc" ]; then
+      SHELL_CONFIG="$HOME/.bashrc"
+    elif [ -f "$HOME/.bash_profile" ]; then
+      SHELL_CONFIG="$HOME/.bash_profile"
+    fi
+    ;;
+esac
+# Fallback: try common configs regardless of $SHELL
+if [ -z "$SHELL_CONFIG" ]; then
+  if [ -f "$HOME/.zshrc" ]; then
+    SHELL_CONFIG="$HOME/.zshrc"
+  elif [ -f "$HOME/.bashrc" ]; then
+    SHELL_CONFIG="$HOME/.bashrc"
+  elif [ -f "$HOME/.bash_profile" ]; then
+    SHELL_CONFIG="$HOME/.bash_profile"
+  fi
+fi
+if [ -z "$SHELL_CONFIG" ]; then
   echo "Could not find shell config file (~/.zshrc, ~/.bashrc, or ~/.bash_profile)"
   exit 1
 fi
@@ -32,7 +46,7 @@ else
   # Download from GitHub
   SESH_SOURCE=$(mktemp)
   curl -fsSL "https://raw.githubusercontent.com/nathangathright/sesh/main/sesh.sh" -o "$SESH_SOURCE"
-  trap "rm -f '$SESH_SOURCE'" EXIT
+  trap 'rm -f "$SESH_SOURCE"' EXIT
 fi
 
 UPDATING=0
