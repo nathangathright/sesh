@@ -14,6 +14,7 @@ There are only two files that matter:
   - `_sesh_state_dir()` — Ensures `~/.local/state/sesh/` exists, prints path.
   - `_sesh_track_last()` — Writes session name to state file for last-session toggle.
   - `_sesh_default_name()` — Git-aware default session name (remote origin → git root → basename).
+  - `_sesh_sanitize_name()` — Replaces `.` and `:` (tmux separators) with `-` in session names.
   - `_sesh_status()` — Checks `#{pane_current_command}` for `node` to detect if Claude is running.
   - `_sesh_attach()` — Centralizes `tmux attach` vs `tmux switch-client` based on `$TMUX` context.
   - `_sesh_create()` — Creates a new tmux session with Claude Code (env vars, crash resilience, auto-resume).
@@ -33,7 +34,7 @@ Key design decisions:
 - `_sesh_select` manages raw terminal mode directly via `stty` and restores state via trap handlers.
 - The zsh-specific `read -k` and array syntax (`${(@f)...}`, 1-based indexing) means this currently targets zsh primarily.
 - Subcommand names (`agent`, `new`, `last`, `list`, `ls`, `clone`, `kill`, `help`, `version`) are reserved — sessions with these names must use `sesh -s <name>`.
-- All tmux `-t` targets use the `=` prefix (e.g., `-t "=$name"`) for exact session name matching. Without this, dots and colons in session names are misinterpreted as window/pane separators.
+- All tmux `-t` targets use the `=` prefix (e.g., `-t "=$name"`) for exact session name matching. Session names are also sanitized (`_sesh_sanitize_name`) to replace `.` and `:` with `-`, since tmux parses these as window/pane separators even with the `=` prefix.
 - Status detection: Claude Code runs as `node`. Check `#{pane_current_command}` for `node` → "active". Also detects `#{pane_dead}` for dead/crashed sessions.
 - Picker annotations use double-space delimiter (`"session  [active]"`) and are stripped with `${SELECTED%%  \[*}`.
 - State is stored in `~/.local/state/sesh/` (last and second_last files for session toggle).

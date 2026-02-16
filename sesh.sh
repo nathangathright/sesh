@@ -26,6 +26,14 @@ _sesh_track_last() {
   fi
 }
 
+# Sanitize session name: replace dots and colons (tmux separators) with hyphens
+_sesh_sanitize_name() {
+  local name="$1"
+  name="${name//./-}"
+  name="${name//:/-}"
+  printf '%s' "$name"
+}
+
 # Git-aware default session name
 _sesh_default_name() {
   local name=""
@@ -46,7 +54,7 @@ _sesh_default_name() {
   fi
   # Final fallback: current directory name
   [[ -z "$name" ]] && name="${PWD##*/}"
-  printf '%s' "$name"
+  printf '%s' "$(_sesh_sanitize_name "$name")"
 }
 
 # Check if Claude is running in a tmux session
@@ -341,7 +349,7 @@ _sesh_clone() {
   fi
 
   local clone_path="${PWD}/${name}"
-  sesh "$name" "$clone_path"
+  sesh "$(_sesh_sanitize_name "$name")" "$clone_path"
 }
 
 # Subcommand: kill sessions
@@ -432,6 +440,8 @@ _sesh_new() {
   read -r session_name
   if [[ -z "$session_name" ]]; then
     session_name="$default_name"
+  else
+    session_name=$(_sesh_sanitize_name "$session_name")
   fi
 
   # If session already exists, attach to it
@@ -574,6 +584,8 @@ sesh() {
     _sesh_help
     return 1
   fi
+
+  session_name=$(_sesh_sanitize_name "$session_name")
 
   # Check if session already exists
   if tmux has-session -t "=$session_name" 2>/dev/null; then
