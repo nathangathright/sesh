@@ -15,20 +15,24 @@ There are only two files that matter:
   - `_sesh_track_last()` — Writes session name to state file for last-session toggle.
   - `_sesh_default_name()` — Git-aware default session name (remote origin → git root → basename).
   - `_sesh_status()` — Checks `#{pane_current_command}` for `node` to detect if Claude is running.
+  - `_sesh_attach()` — Centralizes `tmux attach` vs `tmux switch-client` based on `$TMUX` context.
+  - `_sesh_create()` — Creates a new tmux session with Claude Code (env vars, crash resilience, auto-resume).
   - `_sesh_select()` — Interactive terminal menu (raw mode, ANSI escape sequences, arrow/vim key navigation, inline kill with `d` key). Returns selection via the `$SELECTED` global variable.
   - `_sesh_last()` — Subcommand: toggle to previous session via state file.
   - `_sesh_list()` — Subcommand: non-interactive session status dashboard.
   - `_sesh_clone()` — Subcommand: git clone + session creation.
   - `_sesh_kill()` — Subcommand: kill sessions (by name, all, or via picker). `--all` only kills sesh-managed sessions (those with `SESH_SESSION` env var).
+  - `_sesh_agent()` — Subcommand: starts Claude Code in the current tmux session (guards on `$TMUX`).
+  - `_sesh_new()` — Subcommand: interactive session creation wizard (prompts for name and path).
   - `_sesh_help()` — Prints usage information for `sesh help`.
-  - `sesh()` — Core logic: subcommand routing → argument parsing → tmux context detection → session enumeration → session creation/attachment → Claude Code launch.
+  - `sesh()` — Core logic: subcommand routing → argument parsing → session creation/attachment. Naked `sesh` shows help.
 - **`install.sh`** — Appends the contents of `sesh.sh` into the user's shell config file between `# >>> sesh >>>` / `# <<< sesh <<<` markers. Supports in-place updates when markers are present, and detects legacy (unmarked) installations.
 
 Key design decisions:
 - Functions are sourced into the shell (not run as a subprocess) so they can modify the user's terminal state and attach to tmux sessions.
 - `_sesh_select` manages raw terminal mode directly via `stty` and restores state via trap handlers.
 - The zsh-specific `read -k` and array syntax (`${(@f)...}`, 1-based indexing) means this currently targets zsh primarily.
-- Subcommand names (`last`, `list`, `ls`, `clone`, `kill`, `help`, `version`) are reserved — sessions with these names must use `sesh -s <name>`.
+- Subcommand names (`agent`, `new`, `last`, `list`, `ls`, `clone`, `kill`, `help`, `version`) are reserved — sessions with these names must use `sesh -s <name>`.
 - All tmux `-t` targets use the `=` prefix (e.g., `-t "=$name"`) for exact session name matching. Without this, dots and colons in session names are misinterpreted as window/pane separators.
 - Status detection: Claude Code runs as `node`. Check `#{pane_current_command}` for `node` → "active". Also detects `#{pane_dead}` for dead/crashed sessions.
 - Picker annotations use double-space delimiter (`"session  [active]"`) and are stripped with `${SELECTED%%  \[*}`.

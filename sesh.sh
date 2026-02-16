@@ -75,6 +75,49 @@ _sesh_status() {
   fi
 }
 
+# Attach or switch to a tmux session
+_sesh_attach() {
+  local target="$1"
+  if [[ -n "$TMUX" ]]; then
+    tmux switch-client -t "=$target"
+  else
+    tmux attach -t "=$target"
+  fi
+}
+
+# Create a new tmux session with Claude Code
+_sesh_create() {
+  local session_name="$1"
+  local project_path="$2"
+  local base_cmd="$3"
+  local initial_prompt="${4:-}"
+
+  # Build claude command with auto-resume and initial prompt
+  local claude_cmd="$base_cmd"
+  if [[ -d "${project_path}/.claude" ]]; then
+    claude_cmd="${claude_cmd} --continue"
+  fi
+  if [[ -n "$initial_prompt" ]]; then
+    claude_cmd="${claude_cmd} -p $(printf '%q' "$initial_prompt")"
+  fi
+
+  # Create new session, navigate to path, and start Claude Code
+  echo "Creating new session '$session_name' at $project_path"
+  tmux new-session -s "$session_name" -c "$project_path" -d
+
+  # Inject environment variables so child processes know their context
+  tmux set-environment -t "=$session_name" SESH_SESSION "$session_name"
+  tmux set-environment -t "=$session_name" SESH_PATH "$project_path"
+
+  # Crash resilience: keep pane visible on exit and auto-respawn.
+  tmux set-option -t "=$session_name" remain-on-exit on
+  tmux set-hook -t "=$session_name" pane-died "respawn-pane -k"
+
+  tmux send-keys -t "=$session_name" "$claude_cmd" C-m
+  _sesh_track_last "$session_name"
+  _sesh_attach "$session_name"
+}
+
 # Interactive menu helper (arrow keys + enter)
 # Usage: _sesh_select [--kill] "prompt" option1 option2 ...
 # Returns selection via the global $SELECTED variable
@@ -236,11 +279,7 @@ _sesh_last() {
   fi
 
   _sesh_track_last "$target"
-  if [[ -n "$TMUX" ]]; then
-    tmux switch-client -t "=$target"
-  else
-    tmux attach -t "=$target"
-  fi
+  _sesh_attach "$target"
 }
 
 # Subcommand: non-interactive session listing
@@ -357,31 +396,99 @@ _sesh_kill() {
   esac
 }
 
+# Subcommand: start Claude Code in current tmux session
+_sesh_agent() {
+  local base_cmd="$1"
+  local initial_prompt="${2:-}"
+
+  if [[ -z "$TMUX" ]]; then
+    echo "Error: 'sesh agent' must be run inside a tmux session."
+    echo "Use 'sesh new' to create a session first."
+    return 1
+  fi
+
+  local claude_cmd="$base_cmd"
+  local current_path
+  current_path=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
+  if [[ -d "${current_path}/.claude" ]]; then
+    claude_cmd="${claude_cmd} --continue"
+  fi
+  if [[ -n "$initial_prompt" ]]; then
+    claude_cmd="${claude_cmd} -p $(printf '%q' "$initial_prompt")"
+  fi
+  echo "Starting Claude Code..."
+  eval "$claude_cmd"
+}
+
+# Subcommand: interactive session creation wizard
+_sesh_new() {
+  local base_cmd="$1"
+  local initial_prompt="${2:-}"
+
+  # Prompt for session name
+  local default_name
+  default_name=$(_sesh_default_name)
+  printf "Session name [%s]: " "$default_name"
+  read -r session_name
+  if [[ -z "$session_name" ]]; then
+    session_name="$default_name"
+  fi
+
+  # If session already exists, attach to it
+  if tmux has-session -t "=$session_name" 2>/dev/null; then
+    echo "Attaching to existing session: $session_name"
+    _sesh_track_last "$session_name"
+    _sesh_attach "$session_name"
+    return
+  fi
+
+  # Prompt for project path
+  local default_path="$PWD"
+  printf "Project path [%s]: " "$default_path"
+  read -r project_path
+  if [[ -z "$project_path" ]]; then
+    project_path="$default_path"
+  fi
+
+  # Expand ~ to home directory
+  project_path="${project_path/#\~/$HOME}"
+
+  # Check if directory exists
+  if [[ ! -d "$project_path" ]]; then
+    printf "Directory '%s' does not exist. Create it? (y/n) " "$project_path"
+    read -r REPLY
+    if [[ $REPLY =~ ^[Yy] ]]; then
+      mkdir -p "$project_path"
+      echo "Created directory: $project_path"
+    else
+      echo "Aborted."
+      return 1
+    fi
+  fi
+
+  _sesh_create "$session_name" "$project_path" "$base_cmd" "$initial_prompt"
+}
+
 # Print usage information
 _sesh_help() {
   cat <<'EOF'
-Usage: sesh [command] [options]
+Usage: sesh <command> [options]
 
 Commands:
-  sesh                              Smart: does the right thing based on context
-  sesh <name> [path] [prompt]       Create/attach session with positional args
-  sesh last                         Toggle to previous session
-  sesh list, ls                     Show all sessions with status
-  sesh clone <url> [name]           Git clone + create session
-  sesh kill [name|--all]            Kill sessions
-  sesh help                         Show this help message
-  sesh version                      Show version
+  sesh new                        Interactive session creation wizard
+  sesh <name> [path]              Create or attach to a session
+  sesh agent                      Start Claude Code in current session
+  sesh last                       Toggle to previous session
+  sesh list, ls                   Show all sessions with status
+  sesh clone <url> [name]         Git clone + create session
+  sesh kill [name|--all]          Kill sessions
+  sesh help                       Show this help message
+  sesh version                    Show version
 
 Options:
   -s, --session <name>    Session name
   -p, --path <path>       Project path
   -m, --message <text>    Initial prompt for Claude
-
-Context-aware behavior (no arguments):
-  Inside tmux    Resumes Claude Code
-  0 sessions     Prompts for session name and project path
-  1 session      Auto-attaches
-  N sessions     Interactive menu with status indicators
 EOF
 }
 
@@ -390,6 +497,8 @@ sesh() {
   # Load user config if it exists
   local _sesh_config="${SESH_CONFIG:-${HOME}/.config/sesh/config}"
   [[ -f "$_sesh_config" ]] && source "$_sesh_config"
+
+  local base_cmd="${SESH_CMD:-claude --dangerously-skip-permissions}"
 
   # Subcommand routing
   case "${1:-}" in
@@ -405,6 +514,28 @@ sesh() {
       shift; _sesh_clone "$@"; return $? ;;
     kill)
       shift; _sesh_kill "$@"; return $? ;;
+    agent)
+      shift
+      local initial_prompt=""
+      while [[ $# -gt 0 ]]; do
+        case $1 in
+          -m|--message) initial_prompt="$2"; shift 2 ;;
+          *) initial_prompt="$1"; shift ;;
+        esac
+      done
+      _sesh_agent "$base_cmd" "$initial_prompt"; return $? ;;
+    new)
+      shift
+      local initial_prompt=""
+      while [[ $# -gt 0 ]]; do
+        case $1 in
+          -m|--message) initial_prompt="$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      _sesh_new "$base_cmd" "$initial_prompt"; return $? ;;
+    "")
+      _sesh_help; return 0 ;;
   esac
 
   local session_name=""
@@ -427,39 +558,33 @@ sesh() {
         shift 2
         ;;
       *)
-        # Positional: first=session, second=path, third=prompt
+        # Positional: first=session, second=path
         if [[ -z "$session_name" ]]; then
           session_name="$1"
         elif [[ -z "$project_path" ]]; then
           project_path="$1"
-        elif [[ -z "$initial_prompt" ]]; then
-          initial_prompt="$1"
         fi
         shift
         ;;
     esac
   done
 
-  local base_cmd="${SESH_CMD:-claude --dangerously-skip-permissions}"
+  # Session name is required at this point
+  if [[ -z "$session_name" ]]; then
+    _sesh_help
+    return 1
+  fi
 
-  # Check if we're already inside a tmux session
-  if [[ -n "$TMUX" ]]; then
-    local claude_cmd="$base_cmd"
-    local current_path
-    current_path=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
-    if [[ -d "${current_path}/.claude" ]]; then
-      claude_cmd="${claude_cmd} --continue"
-    fi
-    if [[ -n "$initial_prompt" ]]; then
-      claude_cmd="${claude_cmd} -p $(printf '%q' "$initial_prompt")"
-    fi
-    echo "Starting Claude Code..."
-    eval "$claude_cmd"
+  # Check if session already exists
+  if tmux has-session -t "=$session_name" 2>/dev/null; then
+    echo "Attaching to existing session: $session_name"
+    _sesh_track_last "$session_name"
+    _sesh_attach "$session_name"
     return
   fi
 
   # Zoxide integration: resolve path when name given but no path
-  if [[ -n "$session_name" && -z "$project_path" ]]; then
+  if [[ -z "$project_path" ]]; then
     if command -v zoxide &>/dev/null; then
       local zoxide_result
       zoxide_result=$(zoxide query "$session_name" 2>/dev/null)
@@ -467,69 +592,6 @@ sesh() {
         project_path="$zoxide_result"
       fi
     fi
-  fi
-
-  # If no session name provided, check existing sessions
-  if [[ -z "$session_name" ]]; then
-    local sessions
-    sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null)
-    local session_count=0
-
-    if [[ -n "$sessions" ]]; then
-      session_count=$(echo "$sessions" | wc -l | tr -d ' ')
-    fi
-
-    if [[ "$session_count" -eq 1 ]]; then
-      session_name=$(echo "$sessions" | head -1)
-      echo "Attaching to session: $session_name"
-      _sesh_track_last "$session_name"
-      tmux attach -t "=$session_name"
-      return
-    elif [[ "$session_count" -gt 1 ]]; then
-      # Build display list with status annotations
-      local -a session_list=()
-      local name sess_status
-      while IFS= read -r name; do
-        sess_status=$(_sesh_status "$name")
-        session_list+=("${name}  [${sess_status}]")
-      done <<< "$sessions"
-
-      if _sesh_select --kill "Select a session:" "${session_list[@]}"; then
-        # Strip status annotation
-        session_name="${SELECTED%%  \[*}"
-        echo "Attaching to session: $session_name"
-        _sesh_track_last "$session_name"
-        tmux attach -t "=$session_name"
-        return
-      else
-        echo "Cancelled."
-        return 1
-      fi
-    else
-      # No sessions exist - prompt for new session details
-      local default_name
-      default_name=$(_sesh_default_name)
-      printf "Session name [%s]: " "$default_name"
-      read -r session_name
-      if [[ -z "$session_name" ]]; then
-        session_name="$default_name"
-      fi
-
-      local default_path="$PWD"
-      printf "Project path [%s]: " "$default_path"
-      read -r project_path
-      if [[ -z "$project_path" ]]; then
-        project_path="$default_path"
-      fi
-    fi
-  fi
-
-  # Check if session already exists (when session name was provided)
-  if tmux has-session -t "=$session_name" 2>/dev/null; then
-    echo "Attaching to existing session: $session_name"
-    _sesh_track_last "$session_name"
-    tmux attach -t "=$session_name"
-    return
   fi
 
   # If no path provided yet, prompt for it
@@ -558,30 +620,5 @@ sesh() {
     fi
   fi
 
-  # Build claude command with auto-resume and initial prompt
-  local claude_cmd="$base_cmd"
-  if [[ -d "${project_path}/.claude" ]]; then
-    claude_cmd="${claude_cmd} --continue"
-  fi
-  if [[ -n "$initial_prompt" ]]; then
-    claude_cmd="${claude_cmd} -p $(printf '%q' "$initial_prompt")"
-  fi
-
-  # Create new session, navigate to path, and start Claude Code
-  echo "Creating new session '$session_name' at $project_path"
-  tmux new-session -s "$session_name" -c "$project_path" -d
-
-  # Inject environment variables so child processes know their context
-  tmux set-environment -t "=$session_name" SESH_SESSION "$session_name"
-  tmux set-environment -t "=$session_name" SESH_PATH "$project_path"
-
-  # Crash resilience: keep pane visible on exit and auto-respawn.
-  # Protects the session if the shell process itself crashes (OOM, SIGKILL, etc.).
-  # For Claude exits, the shell continues naturally and the user can restart.
-  tmux set-option -t "=$session_name" remain-on-exit on
-  tmux set-hook -t "=$session_name" pane-died "respawn-pane -k"
-
-  tmux send-keys -t "=$session_name" "$claude_cmd" C-m
-  _sesh_track_last "$session_name"
-  tmux attach -t "=$session_name"
+  _sesh_create "$session_name" "$project_path" "$base_cmd" "$initial_prompt"
 }
