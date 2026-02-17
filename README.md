@@ -28,6 +28,7 @@ sesh clone <url> [name]           # Git clone + create session
 sesh kill <name>                  # Kill a specific session
 sesh kill --all                   # Kill all sessions
 sesh kill                         # Interactive session killer
+sesh update                       # Check for and install updates
 ```
 
 ## How it works
@@ -50,6 +51,7 @@ sesh kill                         # Interactive session killer
 | `sesh list` / `sesh ls` | Non-interactive dashboard showing session name, path, and status |
 | `sesh clone <url> [name]` | Git clone a repo and create a session for it |
 | `sesh kill [name\|--all]` | Kill sessions by name, all at once, or via interactive picker |
+| `sesh update` | Check for and install the latest version |
 
 ### Smart features
 
@@ -137,7 +139,7 @@ These are useful in Claude Code hooks, shell scripts, or prompts to detect that 
 
 ## Notes
 
-Subcommand names (`last`, `list`, `ls`, `clone`, `kill`) are reserved. If you need a session with one of these names, use `sesh -s last` instead.
+Subcommand names (`last`, `list`, `ls`, `clone`, `kill`, `update`) are reserved. If you need a session with one of these names, use `sesh -s last` instead.
 
 ## Uninstall
 

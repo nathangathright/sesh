@@ -500,6 +500,97 @@ _sesh_new() {
   _sesh_create "$session_name" "$project_path" "$base_cmd" "$initial_prompt"
 }
 
+# Subcommand: check for and install updates
+_sesh_update() {
+  local current_version="$SESH_VERSION"
+
+  # Detect shell config file (same logic as install.sh)
+  local shell_config=""
+  case "${SHELL##*/}" in
+    zsh)  [[ -f "$HOME/.zshrc" ]] && shell_config="$HOME/.zshrc" ;;
+    bash)
+      if [[ -f "$HOME/.bashrc" ]]; then
+        shell_config="$HOME/.bashrc"
+      elif [[ -f "$HOME/.bash_profile" ]]; then
+        shell_config="$HOME/.bash_profile"
+      fi
+      ;;
+  esac
+  if [[ -z "$shell_config" ]]; then
+    if [[ -f "$HOME/.zshrc" ]]; then
+      shell_config="$HOME/.zshrc"
+    elif [[ -f "$HOME/.bashrc" ]]; then
+      shell_config="$HOME/.bashrc"
+    elif [[ -f "$HOME/.bash_profile" ]]; then
+      shell_config="$HOME/.bash_profile"
+    fi
+  fi
+  if [[ -z "$shell_config" ]]; then
+    echo "Could not find shell config file (~/.zshrc, ~/.bashrc, or ~/.bash_profile)"
+    return 1
+  fi
+
+  # Verify markers exist
+  if ! grep -q "# >>> sesh >>>" "$shell_config" 2>/dev/null; then
+    echo "Sesh markers not found in $shell_config."
+    echo "Please reinstall: curl -fsSL https://raw.githubusercontent.com/nathangathright/sesh/main/install.sh | bash"
+    return 1
+  fi
+
+  # Download latest sesh.sh to temp file
+  local tmpfile
+  tmpfile=$(mktemp)
+
+  echo "Checking for updates..."
+  if ! curl -fsSL "https://raw.githubusercontent.com/nathangathright/sesh/main/sesh.sh" -o "$tmpfile" 2>/dev/null; then
+    echo "Failed to download update."
+    rm -f "$tmpfile"
+    return 1
+  fi
+
+  # Validate download
+  if ! grep -q 'SESH_VERSION=' "$tmpfile" || ! grep -q 'sesh()' "$tmpfile"; then
+    echo "Downloaded file is invalid."
+    rm -f "$tmpfile"
+    return 1
+  fi
+
+  # Compare versions
+  local remote_version
+  remote_version=$(grep '^SESH_VERSION=' "$tmpfile" | head -1)
+  remote_version="${remote_version#SESH_VERSION=\"}"
+  remote_version="${remote_version%\"}"
+
+  if [[ "$current_version" == "$remote_version" ]]; then
+    echo "Already up to date (v${current_version})."
+    rm -f "$tmpfile"
+    return 0
+  fi
+
+  # Strip old markers from shell config
+  local tmp_config
+  tmp_config=$(mktemp)
+  awk -v start="# >>> sesh >>>" -v end="# <<< sesh <<<" '
+    $0 == start { skip=1; next }
+    $0 == end { skip=0; next }
+    !skip { print }
+  ' "$shell_config" > "$tmp_config"
+  mv "$tmp_config" "$shell_config"
+
+  # Append new marked content
+  {
+    echo "# >>> sesh >>>"
+    cat "$tmpfile"
+    echo "# <<< sesh <<<"
+  } >> "$shell_config"
+
+  # Source the new version directly
+  source "$tmpfile"
+  rm -f "$tmpfile"
+
+  echo "Updated sesh: v${current_version} -> v${remote_version}"
+}
+
 # Print usage information
 _sesh_help() {
   cat <<'EOF'
@@ -513,6 +604,7 @@ Commands:
   sesh list, ls                   Show all sessions with status
   sesh clone <url> [name]         Git clone + create session
   sesh kill [name|--all]          Kill sessions
+  sesh update                     Check for and install updates
   sesh help                       Show this help message
   sesh version                    Show version
 
@@ -537,6 +629,8 @@ sesh() {
       _sesh_help; return 0 ;;
     version|--version|-v)
       echo "sesh $SESH_VERSION"; return 0 ;;
+    update)
+      shift; _sesh_update "$@"; return $? ;;
     last)
       shift; _sesh_last "$@"; return $? ;;
     list|ls)
