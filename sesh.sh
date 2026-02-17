@@ -709,6 +709,14 @@ sesh() {
 
   session_name=$(_sesh_sanitize_name "$session_name")
 
+  # Block reserved subcommand names
+  case "$session_name" in
+    help|version|update|last|list|ls|clone|kill|agent|new)
+      echo "Error: '$session_name' is a reserved subcommand name." >&2
+      return 1
+      ;;
+  esac
+
   # Check if session already exists
   if tmux has-session -t "=$session_name" 2>/dev/null; then
     echo "Attaching to existing session: $session_name"
