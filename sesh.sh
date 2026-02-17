@@ -324,7 +324,7 @@ _sesh_last() {
   _sesh_attach "$target"
 }
 
-# Subcommand: non-interactive session listing
+# Subcommand: interactive session picker
 _sesh_list() {
   local sessions
   sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null)
@@ -333,31 +333,18 @@ _sesh_list() {
     return 0
   fi
 
-  # Collect data and find max name width
-  local -a names=() paths=() statuses=()
-  local name sess_path sess_status max_name=7
+  local -a session_list=()
+  local name sess_status
   while IFS= read -r name; do
-    sess_path=$(tmux display-message -p -t "=${name}:" '#{pane_current_path}' 2>/dev/null)
-    # Fallback: try SESH_PATH from session environment
-    if [[ -z "$sess_path" ]]; then
-      sess_path=$(tmux show-environment -t "=$name" SESH_PATH 2>/dev/null)
-      sess_path="${sess_path#SESH_PATH=}"
-    fi
     sess_status=$(_sesh_status "$name")
-    names+=("$name")
-    paths+=("$sess_path")
-    statuses+=("$sess_status")
-    (( ${#name} > max_name )) && max_name=${#name}
+    session_list+=("${name}  [${sess_status}]")
   done <<< "$sessions"
 
-  local col1=$((max_name + 2))
-  printf "%-${col1}s %-40s %s\n" "SESSION" "PATH" "STATUS"
-  printf "%-${col1}s %-40s %s\n" "-------" "----" "------"
-
-  local i
-  for ((i = 1; i <= ${#names[@]}; i++)); do
-    printf "%-${col1}s %-40s %s\n" "${names[$i]}" "${paths[$i]}" "[${statuses[$i]}]"
-  done
+  if _sesh_select --kill "Select a session:" "${session_list[@]}"; then
+    local target="${SELECTED%%  \[*}"
+    _sesh_track_last "$target"
+    _sesh_attach "$target"
+  fi
 }
 
 # Subcommand: git clone + create session
@@ -601,7 +588,7 @@ Commands:
   sesh <name> [path]              Create or attach to a session
   sesh agent                      Start Claude Code in current session
   sesh last                       Toggle to previous session
-  sesh list, ls                   Show all sessions with status
+  sesh list, ls                   Interactive session picker
   sesh clone <url> [name]         Git clone + create session
   sesh kill [name|--all]          Kill sessions
   sesh update                     Check for and install updates
