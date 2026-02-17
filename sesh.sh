@@ -245,8 +245,8 @@ _sesh_select() {
       d|D)
         if [[ $kill_enabled -eq 1 && $num_options -gt 0 ]]; then
           local target="${options[$((selected + 1))]}"
-          # Strip status annotation (e.g. "session  [active]" → "session")
-          target="${target%%  \[*}"
+          # Strip annotation (e.g. "session  [active]" or "session  path  [active]" → "session")
+          target="${target%%  *}"
           tmux kill-session -t "=$target" 2>/dev/null
           # Remove from array (zsh 1-based)
           options[$((selected + 1))]=()
@@ -324,24 +324,47 @@ _sesh_last() {
   _sesh_attach "$target"
 }
 
-# Subcommand: interactive session picker
-_sesh_list() {
+# Build annotated session list for pickers. Sets SESSION_LIST array.
+_sesh_build_list() {
+  SESSION_LIST=()
   local sessions
   sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null)
-  if [[ -z "$sessions" ]]; then
+  [[ -z "$sessions" ]] && return 1
+
+  local -a names=() paths=() statuses=()
+  local name sess_path sess_status max_name=0 max_path=0
+  while IFS= read -r name; do
+    sess_path=$(tmux display-message -p -t "=${name}:" '#{pane_current_path}' 2>/dev/null)
+    if [[ -z "$sess_path" ]]; then
+      sess_path=$(tmux show-environment -t "=$name" SESH_PATH 2>/dev/null)
+      sess_path="${sess_path#SESH_PATH=}"
+    fi
+    sess_path="${sess_path/#$HOME/~}"
+    sess_status=$(_sesh_status "$name")
+    names+=("$name")
+    paths+=("$sess_path")
+    statuses+=("$sess_status")
+    (( ${#name} > max_name )) && max_name=${#name}
+    (( ${#sess_path} > max_path )) && max_path=${#sess_path}
+  done <<< "$sessions"
+
+  local i name_pad path_pad
+  for ((i = 1; i <= ${#names[@]}; i++)); do
+    name_pad=$((max_name - ${#names[$i]} + 2))
+    path_pad=$((max_path - ${#paths[$i]} + 2))
+    SESSION_LIST+=("${names[$i]}$(printf '%*s' $name_pad '')${paths[$i]}$(printf '%*s' $path_pad '')[${statuses[$i]}]")
+  done
+}
+
+# Subcommand: interactive session picker
+_sesh_list() {
+  if ! _sesh_build_list; then
     echo "No active sessions."
     return 0
   fi
 
-  local -a session_list=()
-  local name sess_status
-  while IFS= read -r name; do
-    sess_status=$(_sesh_status "$name")
-    session_list+=("${name}  [${sess_status}]")
-  done <<< "$sessions"
-
-  if _sesh_select --kill "Select a session:" "${session_list[@]}"; then
-    local target="${SELECTED%%  \[*}"
+  if _sesh_select --kill "Select a session:" "${SESSION_LIST[@]}"; then
+    local target="${SELECTED%%  *}"
     _sesh_track_last "$target"
     _sesh_attach "$target"
   fi
@@ -401,20 +424,12 @@ _sesh_kill() {
       ;;
     "")
       # No args: show picker with status annotations
-      local sessions
-      sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null)
-      if [[ -z "$sessions" ]]; then
+      if ! _sesh_build_list; then
         echo "No sessions to kill."
         return 0
       fi
-      local -a session_list=()
-      local name sess_status
-      while IFS= read -r name; do
-        sess_status=$(_sesh_status "$name")
-        session_list+=("${name}  [${sess_status}]")
-      done <<< "$sessions"
-      if _sesh_select --kill "Kill a session:" "${session_list[@]}"; then
-        local target="${SELECTED%%  \[*}"
+      if _sesh_select --kill "Kill a session:" "${SESSION_LIST[@]}"; then
+        local target="${SELECTED%%  *}"
         tmux kill-session -t "=$target" 2>/dev/null && echo "Killed session: $target"
       fi
       ;;

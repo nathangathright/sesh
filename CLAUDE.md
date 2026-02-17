@@ -19,8 +19,9 @@ There are only two files that matter:
   - `_sesh_attach()` — Centralizes `tmux attach` vs `tmux switch-client` based on `$TMUX` context.
   - `_sesh_create()` — Creates a new tmux session with Claude Code (env vars, crash resilience, auto-resume).
   - `_sesh_select()` — Interactive terminal menu (raw mode, ANSI escape sequences, arrow/vim key navigation, inline kill with `d` key). Returns selection via the `$SELECTED` global variable.
+  - `_sesh_build_list()` — Builds column-aligned session list (name, path, status) for pickers. Returns via `$SESSION_LIST` global array.
   - `_sesh_last()` — Subcommand: toggle to previous session via state file.
-  - `_sesh_list()` — Subcommand: non-interactive session status dashboard.
+  - `_sesh_list()` — Subcommand: interactive session picker with path and status columns.
   - `_sesh_clone()` — Subcommand: git clone + session creation.
   - `_sesh_kill()` — Subcommand: kill sessions (by name, all, or via picker). `--all` only kills sesh-managed sessions (those with `SESH_SESSION` env var).
   - `_sesh_agent()` — Subcommand: starts Claude Code in the current tmux session (guards on `$TMUX`).
@@ -37,7 +38,7 @@ Key design decisions:
 - Subcommand names (`agent`, `new`, `last`, `list`, `ls`, `clone`, `kill`, `update`, `help`, `version`) are reserved — sessions with these names must use `sesh -s <name>`.
 - All tmux `-t` targets use the `=` prefix (e.g., `-t "=$name"`) for exact session name matching. Session names are also sanitized (`_sesh_sanitize_name`) to replace `.` and `:` with `-`, since tmux parses these as window/pane separators even with the `=` prefix.
 - Status detection: Claude Code runs as `node`. Check `#{pane_current_command}` for `node` → "active". Also detects `#{pane_dead}` for dead/crashed sessions.
-- Picker annotations use double-space delimiter (`"session  [active]"`) and are stripped with `${SELECTED%%  \[*}`.
+- Picker annotations use double-space delimiter (`"session  path  [active]"`) and are stripped with `${SELECTED%%  *}`.
 - State is stored in `~/.local/state/sesh/` (last and second_last files for session toggle).
 - Config is loaded from `~/.config/sesh/config` (sourced as shell). Override path with `SESH_CONFIG` env var.
 - Agent command defaults to `claude --dangerously-skip-permissions` but is configurable via `SESH_CMD` env var or config.
