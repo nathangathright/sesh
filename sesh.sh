@@ -198,7 +198,7 @@ _sesh_select() {
 
   _sesh_select_draw() {
     local i
-    local lines_to_move=$((prev_num_options + 2))
+    local lines_to_move=$((prev_num_options + 1))
     [[ ${1:-0} -eq 1 ]] && printf "${ESC}[${lines_to_move}A" >/dev/tty
     printf "${ESC}[2K\r${ESC}[1m%s${ESC}[0m\r\n" "$prompt" >/dev/tty
     for ((i = 0; i < num_options; i++)); do
