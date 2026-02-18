@@ -1,0 +1,38 @@
+#!/bin/bash
+# Pre-push hook: block pushes where sesh.sh changed without a SESH_VERSION bump.
+
+remote="$1"
+
+while read local_ref local_sha remote_ref remote_sha; do
+  # Skip branch deletions
+  if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+    continue
+  fi
+
+  # For new branches, compare against the remote default branch
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    remote_sha=$(git rev-parse "$remote/main" 2>/dev/null || git rev-parse "$remote/master" 2>/dev/null)
+    if [ -z "$remote_sha" ]; then
+      continue
+    fi
+  fi
+
+  # Check if sesh.sh has any diff between remote and local
+  if git diff --quiet "$remote_sha" "$local_sha" -- sesh.sh 2>/dev/null; then
+    continue
+  fi
+
+  # sesh.sh changed — check if SESH_VERSION was bumped
+  remote_version=$(git show "$remote_sha:sesh.sh" 2>/dev/null | grep '^SESH_VERSION=' | head -1)
+  local_version=$(git show "$local_sha:sesh.sh" 2>/dev/null | grep '^SESH_VERSION=' | head -1)
+
+  if [ "$remote_version" = "$local_version" ]; then
+    echo "ERROR: sesh.sh changed but SESH_VERSION was not bumped."
+    echo "  remote: $remote_version"
+    echo "  local:  $local_version"
+    echo "Please update SESH_VERSION in sesh.sh before pushing."
+    exit 1
+  fi
+done
+
+exit 0

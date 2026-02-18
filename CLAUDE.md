@@ -44,7 +44,7 @@ Key design decisions:
 - Agent command defaults to `claude --dangerously-skip-permissions` but is configurable via `SESH_CMD` env var or config.
 - Auto-resume detects `.claude/` directory in the project path and adds `--continue` to the claude command.
 - Crash resilience: sessions use `remain-on-exit on` and `pane-died` hook for auto-respawn. This protects the session if the shell process crashes; for Claude exits, the shell continues naturally.
-- Version is tracked in `SESH_VERSION` at the top of `sesh.sh`.
+- Version is tracked in `SESH_VERSION` at the top of `sesh.sh`. A pre-push hook (`.githooks/pre-push`) blocks pushes where `sesh.sh` changed without a `SESH_VERSION` bump, since `sesh update` uses version equality to detect updates.
 - Environment injection: `SESH_SESSION` and `SESH_PATH` are set in tmux session environment.
 - Zoxide integration is optional and guarded by `command -v zoxide`.
 
@@ -55,6 +55,12 @@ There is no build step, test suite, or linter. To test changes locally:
 ```bash
 source sesh.sh    # Load functions into current shell
 sesh              # Run it
+```
+
+After cloning, configure git to use the repo's hooks:
+
+```bash
+git config core.hooksPath .githooks
 ```
 
 ## Requirements
