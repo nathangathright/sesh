@@ -1,4 +1,4 @@
-# sesh - Smart tmux session manager for Claude Code
+# sesh - Smart tmux session manager for AI coding agents
 # https://github.com/nathangathright/sesh
 
 SESH_VERSION="0.1.0"
@@ -57,7 +57,7 @@ _sesh_default_name() {
   printf '%s' "$(_sesh_sanitize_name "$name")"
 }
 
-# Check if Claude is running in a tmux session
+# Check if a coding agent is running in a tmux session
 _sesh_status() {
   local target="$1"
   # Capture pane info in a single query to avoid race conditions
@@ -65,7 +65,20 @@ _sesh_status() {
   pane_info=$(tmux list-panes -t "=$target" -F '#{pane_current_command} #{pane_dead}' 2>/dev/null)
   if [[ -z "$pane_info" ]]; then
     printf 'dead'
-  elif printf '%s' "$pane_info" | grep -q 'node'; then
+    return
+  fi
+
+  # Determine process name from the session's agent profile
+  local process_name="node"
+  local agent_env
+  agent_env=$(tmux show-environment -t "=$target" SESH_AGENT 2>/dev/null)
+  if [[ -n "$agent_env" && "$agent_env" != "-SESH_AGENT" ]]; then
+    local profile_process
+    profile_process=$(_sesh_agent_profile "${agent_env#SESH_AGENT=}" process 2>/dev/null)
+    [[ -n "$profile_process" ]] && process_name="$profile_process"
+  fi
+
+  if printf '%s' "$pane_info" | grep -q "$process_name"; then
     printf 'active'
   else
     # Check if all panes are dead (remain-on-exit keeps them visible)
@@ -113,48 +126,101 @@ _sesh_resolve_path() {
   printf '%s' "$rpath"
 }
 
-# Build extra Claude CLI args for auto-resume and initial prompt
+# Agent profile lookup: returns agent-specific properties
+# Keys: cmd, resume, prompt, process, state_dir, label
+_sesh_agent_profile() {
+  local agent="$1" key="$2"
+  case "${agent}:${key}" in
+    claude:cmd)        printf '%s' "claude --dangerously-skip-permissions" ;;
+    claude:resume)     printf '%s' "--continue" ;;
+    claude:prompt)     printf '%s' "-p" ;;
+    claude:process)    printf '%s' "node" ;;
+    claude:state_dir)  printf '%s' ".claude" ;;
+    claude:label)      printf '%s' "Claude Code" ;;
+
+    codex:cmd)         printf '%s' "codex --dangerously-bypass-approvals-and-sandbox" ;;
+    codex:resume)      ;;
+    codex:prompt)      ;;
+    codex:process)     printf '%s' "node" ;;
+    codex:state_dir)   printf '%s' ".codex" ;;
+    codex:label)       printf '%s' "Codex" ;;
+
+    gemini:cmd)        printf '%s' "gemini --yolo" ;;
+    gemini:resume)     printf '%s' "--resume" ;;
+    gemini:prompt)     printf '%s' "-p" ;;
+    gemini:process)    printf '%s' "node" ;;
+    gemini:state_dir)  printf '%s' ".gemini" ;;
+    gemini:label)      printf '%s' "Gemini CLI" ;;
+
+    *) return 1 ;;
+  esac
+}
+
+# List of supported agent IDs
+_SESH_AGENTS=("claude" "codex" "gemini")
+
+# Build extra CLI args for auto-resume and initial prompt
 # Sets _SESH_CMD_EXTRA array
 _sesh_build_cmd() {
-  local project_path="$1"
-  local initial_prompt="${2:-}"
+  local agent="$1"
+  local project_path="$2"
+  local initial_prompt="${3:-}"
   _SESH_CMD_EXTRA=()
-  if [[ -d "${project_path}/.claude" ]]; then
-    _SESH_CMD_EXTRA+=(--continue)
+
+  # Auto-resume: check for agent's state directory
+  local state_dir resume_flag
+  state_dir=$(_sesh_agent_profile "$agent" state_dir)
+  resume_flag=$(_sesh_agent_profile "$agent" resume)
+  if [[ -n "$resume_flag" && -d "${project_path}/${state_dir}" ]]; then
+    _SESH_CMD_EXTRA+=("$resume_flag")
   fi
+
+  # Initial prompt
   if [[ -n "$initial_prompt" ]]; then
-    _SESH_CMD_EXTRA+=(-p "$initial_prompt")
+    local prompt_flag
+    prompt_flag=$(_sesh_agent_profile "$agent" prompt)
+    if [[ -n "$prompt_flag" ]]; then
+      _SESH_CMD_EXTRA+=("$prompt_flag" "$initial_prompt")
+    else
+      # Positional argument (e.g., Codex)
+      _SESH_CMD_EXTRA+=("$initial_prompt")
+    fi
   fi
 }
 
-# Create a new tmux session with Claude Code
+# Create a new tmux session with a coding agent
 _sesh_create() {
   local session_name="$1"
   local project_path="$2"
-  local base_cmd="$3"
+  local agent="$3"
   local initial_prompt="${4:-}"
 
-  # Build claude command with auto-resume and initial prompt
-  _sesh_build_cmd "$project_path" "$initial_prompt"
-  local claude_cmd="$base_cmd"
+  # Resolve command: SESH_CMD overrides the agent profile default
+  local base_cmd="${SESH_CMD:-$(_sesh_agent_profile "$agent" cmd)}"
+
+  # Build agent-specific extra args
+  _sesh_build_cmd "$agent" "$project_path" "$initial_prompt"
+  local full_cmd="$base_cmd"
   local arg
   for arg in "${_SESH_CMD_EXTRA[@]}"; do
-    claude_cmd="${claude_cmd} $(printf '%q' "$arg")"
+    full_cmd="${full_cmd} $(printf '%q' "$arg")"
   done
 
-  # Create new session, navigate to path, and start Claude Code
-  echo "Creating new session '$session_name' at $project_path"
+  local label
+  label=$(_sesh_agent_profile "$agent" label)
+  echo "Creating new session '$session_name' at $project_path (${label})"
   tmux new-session -s "$session_name" -c "$project_path" -d
 
   # Inject environment variables so child processes know their context
   tmux set-environment -t "=$session_name" SESH_SESSION "$session_name"
   tmux set-environment -t "=$session_name" SESH_PATH "$project_path"
+  tmux set-environment -t "=$session_name" SESH_AGENT "$agent"
 
   # Crash resilience: keep pane visible on exit and auto-respawn.
   tmux set-option -t "=$session_name" remain-on-exit on
   tmux set-hook -t "=$session_name" pane-died "respawn-pane -k"
 
-  tmux send-keys -t "=$session_name" "$claude_cmd" C-m
+  tmux send-keys -t "=$session_name" "$full_cmd" C-m
   _sesh_track_last "$session_name"
   _sesh_attach "$session_name"
 }
@@ -210,16 +276,8 @@ _sesh_select() {
       fi
       printf "\r\n" >/dev/tty
     done
-    # Clear any leftover lines from previous draw (after deletion)
-    if [[ $prev_num_options -gt $num_options ]]; then
-      local extra=$(( prev_num_options - num_options ))
-      for ((i = 0; i < extra; i++)); do
-        printf "${ESC}[2K\r\n" >/dev/tty
-      done
-      # Move cursor back up to footer position
-      printf "${ESC}[${extra}A" >/dev/tty
-    fi
-    printf "${ESC}[2K\r${ESC}[2m  %s${ESC}[0m" "$footer_hint" >/dev/tty
+    # Clear from cursor to end of screen (removes stale lines after item deletion)
+    printf "${ESC}[J${ESC}[2m  %s${ESC}[0m" "$footer_hint" >/dev/tty
     prev_num_options=$num_options
   }
 
@@ -331,8 +389,8 @@ _sesh_build_list() {
   sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null)
   [[ -z "$sessions" ]] && return 1
 
-  local -a names=() paths=() statuses=()
-  local name sess_path sess_status max_name=0 max_path=0
+  local -a names=() paths=() agents=() statuses=()
+  local name sess_path sess_agent sess_status max_name=0 max_path=0 max_agent=0
   while IFS= read -r name; do
     sess_path=$(tmux display-message -p -t "=${name}:" '#{pane_current_path}' 2>/dev/null)
     if [[ -z "$sess_path" ]]; then
@@ -340,19 +398,36 @@ _sesh_build_list() {
       sess_path="${sess_path#SESH_PATH=}"
     fi
     sess_path="${sess_path/#$HOME/~}"
+
+    # Get agent name from tmux env
+    local agent_env
+    agent_env=$(tmux show-environment -t "=$name" SESH_AGENT 2>/dev/null)
+    if [[ -n "$agent_env" && "$agent_env" != "-SESH_AGENT" ]]; then
+      sess_agent="${agent_env#SESH_AGENT=}"
+    else
+      sess_agent=""
+    fi
+
     sess_status=$(_sesh_status "$name")
     names+=("$name")
     paths+=("$sess_path")
+    agents+=("$sess_agent")
     statuses+=("$sess_status")
     (( ${#name} > max_name )) && max_name=${#name}
     (( ${#sess_path} > max_path )) && max_path=${#sess_path}
+    (( ${#sess_agent} > max_agent )) && max_agent=${#sess_agent}
   done <<< "$sessions"
 
-  local i name_pad path_pad
+  local i name_pad path_pad agent_pad
   for ((i = 1; i <= ${#names[@]}; i++)); do
     name_pad=$((max_name - ${#names[$i]} + 2))
     path_pad=$((max_path - ${#paths[$i]} + 2))
-    SESSION_LIST+=("${names[$i]}$(printf '%*s' $name_pad '')${paths[$i]}$(printf '%*s' $path_pad '')[${statuses[$i]}]")
+    if [[ $max_agent -gt 0 ]]; then
+      agent_pad=$((max_agent - ${#agents[$i]} + 2))
+      SESSION_LIST+=("${names[$i]}$(printf '%*s' $name_pad '')${paths[$i]}$(printf '%*s' $path_pad '')${agents[$i]}$(printf '%*s' $agent_pad '')[${statuses[$i]}]")
+    else
+      SESSION_LIST+=("${names[$i]}$(printf '%*s' $name_pad '')${paths[$i]}$(printf '%*s' $path_pad '')[${statuses[$i]}]")
+    fi
   done
 }
 
@@ -372,8 +447,9 @@ _sesh_list() {
 
 # Subcommand: git clone + create session
 _sesh_clone() {
-  local url="$1"
-  local name="${2:-}"
+  local agent="$1"
+  local url="$2"
+  local name="${3:-}"
 
   if [[ -z "$url" ]]; then
     echo "Usage: sesh clone <url> [name]"
@@ -398,7 +474,7 @@ _sesh_clone() {
   fi
 
   local clone_path="${PWD}/${name}"
-  sesh "$(_sesh_sanitize_name "$name")" "$clone_path"
+  _sesh_create "$(_sesh_sanitize_name "$name")" "$clone_path" "$agent"
 }
 
 # Subcommand: kill sessions
@@ -445,9 +521,9 @@ _sesh_kill() {
   esac
 }
 
-# Subcommand: start Claude Code in current tmux session
+# Subcommand: start coding agent in current tmux session
 _sesh_agent() {
-  local base_cmd="$1"
+  local agent="$1"
   local initial_prompt="${2:-}"
 
   if [[ -z "$TMUX" ]]; then
@@ -456,19 +532,32 @@ _sesh_agent() {
     return 1
   fi
 
+  local base_cmd="${SESH_CMD:-$(_sesh_agent_profile "$agent" cmd)}"
   local current_path
   current_path=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
-  _sesh_build_cmd "$current_path" "$initial_prompt"
+  _sesh_build_cmd "$agent" "$current_path" "$initial_prompt"
   local -a cmd_args=(${(z)base_cmd})
   cmd_args+=("${_SESH_CMD_EXTRA[@]}")
-  echo "Starting Claude Code..."
+  local label
+  label=$(_sesh_agent_profile "$agent" label)
+  echo "Starting ${label}..."
   "${cmd_args[@]}"
 }
 
 # Subcommand: interactive session creation wizard
 _sesh_new() {
-  local base_cmd="$1"
+  local agent="$1"
   local initial_prompt="${2:-}"
+  local show_picker="${3:-1}"
+
+  # Agent selection (only when --agent was not explicitly passed)
+  if [[ "$show_picker" -eq 1 ]]; then
+    if _sesh_select "Select agent:" "${_SESH_AGENTS[@]}"; then
+      agent="$SELECTED"
+    else
+      return 1
+    fi
+  fi
 
   # Prompt for session name
   local default_name
@@ -499,7 +588,7 @@ _sesh_new() {
 
   project_path=$(_sesh_resolve_path "$project_path") || return 1
 
-  _sesh_create "$session_name" "$project_path" "$base_cmd" "$initial_prompt"
+  _sesh_create "$session_name" "$project_path" "$agent" "$initial_prompt"
 }
 
 # Subcommand: check for and install updates
@@ -601,7 +690,7 @@ Usage: sesh <command> [options]
 Commands:
   sesh new                        Interactive session creation wizard
   sesh <name> [path]              Create or attach to a session
-  sesh agent                      Start Claude Code in current session
+  sesh agent                      Start coding agent in current session
   sesh last                       Toggle to previous session
   sesh list, ls                   Interactive session picker
   sesh clone <url> [name]         Git clone + create session
@@ -613,17 +702,58 @@ Commands:
 Options:
   -s, --session <name>    Session name
   -p, --path <path>       Project path
-  -m, --message <text>    Initial prompt for Claude
+  -m, --message <text>    Initial prompt for agent
+  --agent <name>          Agent to use (claude, codex, gemini)
+
+Agents:
+  claude    Claude Code (default)
+  codex     OpenAI Codex
+  gemini    Google Gemini CLI
+
+Environment:
+  SESH_AGENT    Default agent (default: claude)
+  SESH_CMD      Override agent command entirely
+  SESH_CONFIG   Config file path (default: ~/.config/sesh/config)
 EOF
 }
 
-# Smart tmux session manager for Claude Code
+# Smart tmux session manager
 sesh() {
   # Load user config if it exists
   local _sesh_config="${SESH_CONFIG:-${HOME}/.config/sesh/config}"
   [[ -f "$_sesh_config" ]] && source "$_sesh_config"
 
-  local base_cmd="${SESH_CMD:-claude --dangerously-skip-permissions}"
+  # Pre-scan for --agent flag (must happen before subcommand routing)
+  local agent="${SESH_AGENT:-claude}"
+  local agent_explicit=0
+  local -a _sesh_args=("$@")
+  local -a _sesh_filtered=()
+  local i=1
+  while [[ $i -le ${#_sesh_args[@]} ]]; do
+    case "${_sesh_args[$i]}" in
+      --agent)
+        if [[ $i -lt ${#_sesh_args[@]} ]]; then
+          agent="${_sesh_args[$((i + 1))]}"
+          agent_explicit=1
+          i=$((i + 2))
+        else
+          echo "Error: --agent requires an argument." >&2
+          return 1
+        fi
+        ;;
+      *)
+        _sesh_filtered+=("${_sesh_args[$i]}")
+        i=$((i + 1))
+        ;;
+    esac
+  done
+  set -- "${_sesh_filtered[@]}"
+
+  # Validate agent
+  if ! _sesh_agent_profile "$agent" cmd &>/dev/null; then
+    echo "Error: unknown agent '$agent'. Supported: claude, codex, gemini" >&2
+    return 1
+  fi
 
   # Subcommand routing
   case "${1:-}" in
@@ -638,7 +768,7 @@ sesh() {
     list|ls)
       shift; _sesh_list "$@"; return $? ;;
     clone)
-      shift; _sesh_clone "$@"; return $? ;;
+      shift; _sesh_clone "$agent" "$@"; return $? ;;
     kill)
       shift; _sesh_kill "$@"; return $? ;;
     agent)
@@ -652,7 +782,7 @@ sesh() {
           *) initial_prompt="$1"; shift ;;
         esac
       done
-      _sesh_agent "$base_cmd" "$initial_prompt"; return $? ;;
+      _sesh_agent "$agent" "$initial_prompt"; return $? ;;
     new)
       shift
       local initial_prompt=""
@@ -664,7 +794,7 @@ sesh() {
           *) shift ;;
         esac
       done
-      _sesh_new "$base_cmd" "$initial_prompt"; return $? ;;
+      _sesh_new "$agent" "$initial_prompt" "$((1 - agent_explicit))"; return $? ;;
     "")
       _sesh_help; return 0 ;;
   esac
@@ -750,5 +880,5 @@ sesh() {
 
   project_path=$(_sesh_resolve_path "$project_path") || return 1
 
-  _sesh_create "$session_name" "$project_path" "$base_cmd" "$initial_prompt"
+  _sesh_create "$session_name" "$project_path" "$agent" "$initial_prompt"
 }
