@@ -1,7 +1,7 @@
 # sesh - Smart tmux session manager for AI coding agents
 # https://github.com/nathangathright/sesh
 
-SESH_VERSION="0.1.0"
+SESH_VERSION="0.1.1"
 
 # Global: _sesh_select returns its result via $SELECTED
 
