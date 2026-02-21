@@ -391,6 +391,7 @@ _sesh_build_list() {
 
   local -a names=() paths=() agents=() statuses=()
   local name sess_path sess_agent sess_status max_name=0 max_path=0 max_agent=0
+  local agent_env
   while IFS= read -r name; do
     sess_path=$(tmux display-message -p -t "=${name}:" '#{pane_current_path}' 2>/dev/null)
     if [[ -z "$sess_path" ]]; then
@@ -399,8 +400,6 @@ _sesh_build_list() {
     fi
     sess_path="${sess_path/#$HOME/~}"
 
-    # Get agent name from tmux env
-    local agent_env
     agent_env=$(tmux show-environment -t "=$name" SESH_AGENT 2>/dev/null)
     if [[ -n "$agent_env" && "$agent_env" != "-SESH_AGENT" ]]; then
       sess_agent="${agent_env#SESH_AGENT=}"
